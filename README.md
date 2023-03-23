@@ -1,40 +1,21 @@
-# LoRA Replicate inference model
+# Analog Diffusion with Lora, Clip Interrogator
 
 Run inference on Replicate:
 
-[![Replicate](https://replicate.com/replicate/lora/badge)](https://replicate.com/replicate/lora)
+[![Replicate](https://replicate.com/joyanujoy/analog_diffusion/badge)](https://replicate.com/joyanujoy/analog_diffusion)
 
-Training models:
+This repo is adapted from the original lore-inference repo by [cloneofsimo](https://github.com/replicate/lora-inference.git). I'm using this for running experiments easily without having to spin up a GPU server for automatic111 webui. Main modifications are:
 
-- Easy-to-use model pre-configured for faces, objects, and styles: [![Replicate](https://replicate.com/replicate/lora-training/badge)](https://replicate.com/replicate/lora-training)
-- Advanced model with all the parameters: [![Replicate](https://replicate.com/replicate/lora-advanced-training/badge)](https://replicate.com/replicate/lora-advanced-training)
-
-If you have questions or ideas, please join the `#lora` channel in the [Replicate Discord](https://discord.gg/replicate).
+* Add RealESRGAN for upscaling
+* Add Clip Interrogator for auto generating initial img2img prompt
+* Add rembg for background removal from init image.
+* Automatically resize adaptor condition image size to match output image.
+* Modify replicate output schema to return additonal info - seed, clip interrogator generated prompt etc.[API works but breaks replicate web UI explorer]
+* Modify the scripts for download weights, test and deploy to download and cache large model files. Bake the cache files into container image to avoid long wait for model downloads everytime container warms up.
 
 ## Deployments
 
-You can deploy any models at huggingface or ones you trained yourself. You can add LoRA with these models
-
-### 1. Manual deployment
-
-We have a default SD1.5 deployed at [replicate](https://github.com/replicate/lora-inference), so you can run your own in a scalable manner. If you would like to launch your own model, run
-
-```
-cog run script/download-weights.py
-```
-
-to download the weights and place them in the cache directory. This will save base model that will get mounted to the cog container.
-
-Either push the model to [replicate](https://replicate.com/) (follow these instructions for pushing model to replicate) or run
-
-```
-cog predict -i prompt="monkey scuba diving"
-
-```
-
-to run locally.
-
-### 2. Deploy & Push to replicate with bash script
+Deploy & Push to replicate with bash script
 
 First, make a model at replicate.com. Create one [here](https://replicate.com/create)
 

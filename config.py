@@ -4,7 +4,7 @@ caption_model = None when it should be
 caption_model: str = None
 """
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 import torch
 import os
 import clip_interrogator
@@ -13,10 +13,10 @@ import clip_interrogator
 @dataclass
 class Config:
     # models can optionally be passed in directly
-    caption_model: str = None
-    caption_processor: str = None
-    clip_model: str = None
-    clip_preprocess: str = None
+    caption_model: Any = None
+    caption_processor: Any = None
+    clip_model: Any = None
+    clip_preprocess: Any = None
 
     # blip settings
     caption_max_length: int = 32
