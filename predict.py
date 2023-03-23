@@ -1,11 +1,11 @@
 from hashlib import sha512
 import os
-from typing import List
+from typing import List, Optional, Any, Union
 import time
 import requests
 
 import torch
-from cog import BasePredictor, Input, Path
+from cog import BasePredictor, Input, Path, BaseModel
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
@@ -22,9 +22,13 @@ from lora_diffusion import LoRAManager, monkeypatch_remove_lora
 from t2i_adapters import Adapter
 from t2i_adapters import patch_pipe as patch_pipe_t2i_adapter
 from PIL import Image
+from RealESRGAN import RealESRGAN
+from clip_interrogator import Interrogator
+from config import Config
+from transformers import BlipForConditionalGeneration, AutoProcessor
+import rembg
 
 import dotenv
-import os
 
 dotenv.load_dotenv()
 
@@ -56,6 +60,23 @@ def download_lora(url):
         print("Using disk cache...")
 
     return fn
+
+
+class Output(BaseModel):
+    prompt: Optional[str]
+    negative_prompt: Optional[str]
+    width: Optional[int]
+    height: Optional[int]
+    num_inference_steps: Optional[int]
+    guidance_scale: Optional[float]
+    remove_background: Optional[Any] = None
+    clip_interrogator: Optional[Any] = None
+    prompt_strength: Optional[Any] = None
+    scheduler: Optional[str]
+    seed: Optional[int]
+    adapter_type: Optional[str]
+    upscale: Optional[Any] = None
+    images: Optional[List[Path]] = []
 
 
 class Predictor(BasePredictor):
@@ -95,6 +116,34 @@ class Predictor(BasePredictor):
         self.loaded = None
         self.lora_manager = None
 
+        # load upscaler weights
+        self.real_esrgan_models = {}
+        for scale in [2, 4, 8]:
+            self.real_esrgan_models[scale] = RealESRGAN("cuda", scale=scale)
+            self.real_esrgan_models[scale].load_weights(
+                f"{MODEL_CACHE}/RealESRGAN_x{scale}.pth", download=False
+            )
+
+        # clip interrogator
+        self.ci = Interrogator(
+            Config(
+                caption_model=BlipForConditionalGeneration.from_pretrained(
+                    f"{MODEL_CACHE}/blip-large",
+                    torch_dtype=torch.float16 if IS_FP16 else torch.float32,
+                ),
+                caption_processor=AutoProcessor.from_pretrained(
+                    "Salesforce/blip-image-captioning-large"
+                ),
+                clip_model_name="ViT-L-14/openai",
+                clip_model_path=MODEL_CACHE,
+                cache_path=MODEL_CACHE,
+                device="cuda:0",
+            ),
+        )
+        # patch, because in the original lib it looks for device == cuda, here is is
+        # cuda:0
+        self.ci.dtype = torch.float16 if IS_FP16 else torch.float32
+
     def set_lora(self, urllists: List[str], scales: List[float]):
         assert len(urllists) == len(scales), "Number of LoRAs and scales must match."
 
@@ -104,7 +153,6 @@ class Predictor(BasePredictor):
             print("The requested LoRAs are loaded.")
             assert self.lora_manager is not None
         else:
-
             st = time.time()
             self.lora_manager = LoRAManager(
                 [download_lora(url) for url in urllists], self.pipe
@@ -151,6 +199,14 @@ class Predictor(BasePredictor):
             description="(Img2Img) Inital image to generate variations of. If this is not none, Img2Img will be invoked.",
             default=None,
         ),
+        remove_background: bool = Input(
+            description="Automatically remove background from above Img2Img initial image.",
+            default=True,
+        ),
+        clip_interrogator: bool = Input(
+            description="Generate prompt from init image. Generated prompt will override manually entered text prompt input",
+            default=True,
+        ),
         prompt_strength: float = Input(
             description="(Img2Img) Prompt strength when providing the image. 1.0 corresponds to full destruction of information in init image",
             default=0.8,
@@ -179,7 +235,7 @@ class Predictor(BasePredictor):
             description="Random seed. Leave blank to randomize the seed", default=None
         ),
         adapter_condition_image: Path = Input(
-            description="(T2I-adapter) Adapter Condition Image to gain extra control over generation. If this is not none, T2I adapter will be invoked. Width, Height of this image must match the above parameter, or dimension of the Img2Img image.",
+            description="(T2I-adapter) Adapter Condition Image to gain extra control over generation. If this is not none, T2I adapter will be invoked.",
             default=None,
         ),
         adapter_type: str = Input(
@@ -187,7 +243,14 @@ class Predictor(BasePredictor):
             choices=["sketch", "seg", "keypose", "depth"],
             default="sketch",
         ),
-    ) -> List[Path]:
+        upscale: int = Input(
+            description="Upscaling factor", choices=[2, 4, 8], default=None
+        ),
+        verbose_response: bool = Input(
+            description="Return a response object with detail info. Prompt, seed used etc.",
+            default=False,
+        ),
+    ) -> Union[Output, List[Path]]:
         """Run a single prediction on the model"""
         if seed is None:
             seed = int.from_bytes(os.urandom(2), "big")
@@ -195,6 +258,8 @@ class Predictor(BasePredictor):
 
         if image is not None:
             pil_image = Image.open(image).convert("RGB")
+            if remove_background:
+                pil_image = rembg.remove(pil_image).convert("RGB")
             width, height = pil_image.size
 
         print(f"Generating image of {width} x {height} with prompt: {prompt}")
@@ -220,14 +285,11 @@ class Predictor(BasePredictor):
         w_c, h_c = None, None
 
         if adapter_condition_image is not None:
-
             cond_img = Image.open(adapter_condition_image)
             w_c, h_c = cond_img.size
 
             if w_c != width or h_c != height:
-                raise ValueError(
-                    "Width and height of the adapter condition image must match the width and height of the generated image."
-                )
+                cond_img = cond_img.resize((width, height))
 
             if adapter_type == "sketch":
                 cond_img = cond_img.convert("L")
@@ -281,6 +343,12 @@ class Predictor(BasePredictor):
                 scheduler, self.pipe.scheduler.config
             )
 
+            if clip_interrogator:
+                prompt = self.ci.interrogate(pil_image)
+                print(
+                    f"Overriding original prompt with prompt from clip_interrogator => {prompt}"
+                )
+
             output = self.img2img_pipe(
                 prompt=[prompt] * num_outputs if prompt is not None else None,
                 negative_prompt=[negative_prompt] * num_outputs
@@ -292,20 +360,44 @@ class Predictor(BasePredictor):
                 **extra_kwargs,
             )
 
+        nsfw_detected = False
         output_paths = []
         for i, sample in enumerate(output.images):
             if output.nsfw_content_detected and output.nsfw_content_detected[i]:
+                nsfw_detected = True
                 continue
+
+            if upscale in [2, 4, 8]:
+                upscaler = self.real_esrgan_models[upscale]
+                sample = upscaler.predict(sample)
 
             output_path = f"/tmp/out-{i}.png"
             sample.save(output_path)
             output_paths.append(Path(output_path))
 
-        if len(output_paths) == 0:
+        if nsfw_detected:
             raise Exception(
                 "NSFW content detected. Try running it again, or try a different prompt."
             )
 
+        if verbose_response:
+            response = Output(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                remove_background=remove_background,
+                clip_interrogator=clip_interrogator,
+                prompt_strength=prompt_strength,
+                scheduler=scheduler,
+                seed=seed,
+                adapter_type=adapter_type,
+                upscale=upscale,
+                images=output_paths,
+            )
+            return response
         return output_paths
 
 

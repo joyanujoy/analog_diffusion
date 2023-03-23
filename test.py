@@ -4,9 +4,11 @@ from predict import Predictor
 from inspect import signature
 import argparse
 from PIL import Image
+import dotenv
+
+dotenv.load_dotenv()
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--prompt",
@@ -17,9 +19,9 @@ if __name__ == "__main__":
     parser.add_argument("--test_text2img", action="store_true")
     parser.add_argument("--test_img2img", action="store_true")
     parser.add_argument("--test_adapter", action="store_true")
-    
+
     arg = parser.parse_args()
-    
+
     sd_version = arg.sd_version
     prompt = arg.prompt
     test_text2img = arg.test_text2img
@@ -51,7 +53,10 @@ if __name__ == "__main__":
     del defaults["lora_scales"]
     del defaults["guidance_scale"]
     del defaults["seed"]
-    
+    del defaults["remove_background"]
+    del defaults["clip_interrogator"]
+    del defaults["upscale"]
+
     if test_adapter:
         defaults["adapter_condition_image"] = "./test_data/keypose_0.png"
         defaults["adapter_type"] = "keypose"
@@ -81,6 +86,19 @@ if __name__ == "__main__":
 
         Image.open("/tmp/out-0.png").save("./out-1.png")
 
+        # Also test null lora with upscaler
+        out = p.predict(
+            lora_urls="",
+            lora_scales="",
+            prompt=prompt,
+            guidance_scale=3.0,
+            seed=0,
+            upscale=4,
+            **defaults,
+        )
+
+        Image.open("/tmp/out-0.png").save("./out-1-4x.png")
+
         # Also test reloading lora, with null scale
         out = p.predict(
             lora_urls=EXAMPLE_LORAS[sd_version],
@@ -106,11 +124,24 @@ if __name__ == "__main__":
 
         Image.open("/tmp/out-0.png").save("./out-3.png")
 
+        # with upscaler
+        out = p.predict(
+            lora_urls=EXAMPLE_LORAS_2[sd_version],
+            lora_scales="0.5|0.7",
+            prompt=prompt,
+            guidance_scale=3.0,
+            seed=0,
+            upscale=2,
+            **defaults,
+        )
+
+        Image.open("/tmp/out-0.png").save("./out-3-2x.png")
+
         # Test img2img
     if test_img2img:
         del defaults["image"]
         del defaults["prompt_strength"]
-        
+
         out = p.predict(
             lora_urls=EXAMPLE_LORAS_2[sd_version],
             lora_scales="0.5|0.7",
@@ -119,8 +150,58 @@ if __name__ == "__main__":
             seed=0,
             image="./out-0.png",
             prompt_strength=0.7,
+            remove_background=False,
+            clip_interrogator=False,
             **defaults,
         )
-        
+
         Image.open("/tmp/out-0.png").save("./out-img2img.png")
-        
+
+        # with clip interrogator
+        out = p.predict(
+            lora_urls="",
+            lora_scales="",
+            prompt=prompt,
+            guidance_scale=3.0,
+            seed=0,
+            image="./out-0.png",
+            prompt_strength=0.7,
+            remove_background=False,
+            clip_interrogator=True,
+            **defaults,
+        )
+
+        Image.open("/tmp/out-0.png").save("./out-img2img-clip-interrogator.png")
+
+        # with upscaler
+        out = p.predict(
+            lora_urls=EXAMPLE_LORAS_2[sd_version],
+            lora_scales="0.5|0.7",
+            prompt=prompt,
+            guidance_scale=3.0,
+            seed=0,
+            image="./out-0.png",
+            prompt_strength=0.7,
+            remove_background=False,
+            clip_interrogator=False,
+            upscale=8,
+            **defaults,
+        )
+
+        Image.open("/tmp/out-0.png").save("./out-img2img-8x.png")
+
+        # with remove background
+        out = p.predict(
+            lora_urls=EXAMPLE_LORAS_2[sd_version],
+            lora_scales="0.5|0.7",
+            prompt=prompt,
+            guidance_scale=3.0,
+            seed=0,
+            image="./out-0.png",
+            prompt_strength=0.7,
+            remove_background=True,
+            clip_interrogator=False,
+            **defaults,
+        )
+
+        Image.open("/tmp/out-0.png").save("./out-img2img-rembg.png")

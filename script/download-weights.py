@@ -6,7 +6,8 @@ from diffusers import StableDiffusionPipeline
 from diffusers.pipelines.stable_diffusion.safety_checker import (
     StableDiffusionSafetyChecker,
 )
-from transformers import CLIPFeatureExtractor
+from transformers import CLIPFeatureExtractor, BlipForConditionalGeneration
+from RealESRGAN import RealESRGAN
 
 
 import dotenv
@@ -58,3 +59,14 @@ pipe = StableDiffusionPipeline.from_pretrained(
 )
 
 pipe.save_pretrained(MODEL_CACHE)
+
+# Upscaler weights
+for scale in [2, 4, 8]:
+    model = RealESRGAN("cuda", scale=scale)
+    model.load_weights(f"{MODEL_CACHE}/RealESRGAN_x{scale}.pth", download=True)
+
+# clip interrogator models
+caption_model = BlipForConditionalGeneration.from_pretrained(
+    "Salesforce/blip-image-captioning-large", torch_dtype=torch_dtype
+)
+caption_model.save_pretrained(f"{MODEL_CACHE}/blip-large")
